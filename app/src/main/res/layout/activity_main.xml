@@ -1,0 +1,86 @@
+<!-- res/layout/activity_main.xml -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="16dp">
+
+    <Button
+        android:id="@+id/btn_enable_scan"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Activer Bluetooth + Scanner BLE" />
+
+    <!-- Bloc affichage tension -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:orientation="vertical"
+        android:padding="12dp"
+        android:background="#EEEEEE">
+
+        <TextView
+            android:id="@+id/txt_bp"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Tension : -- / -- mmHg"
+            android:textSize="26sp"
+            android:textStyle="bold"
+            android:textAlignment="center"
+            android:padding="6dp" />
+
+        <TextView
+            android:id="@+id/txt_pulse"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Pouls : -- bpm"
+            android:textSize="18sp"
+            android:textAlignment="center"
+            android:paddingTop="4dp" />
+
+        <TextView
+            android:id="@+id/txt_time"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Date : --"
+            android:textSize="14sp"
+            android:textAlignment="center"
+            android:textColor="#555555"
+            android:paddingTop="2dp" />
+        <TextView
+            android:id="@+id/txt_feature"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Features : --"
+            android:textSize="13sp"
+            android:textColor="#444444"
+            android:paddingTop="6dp"/>
+
+    </LinearLayout>
+
+    <!-- Log -->
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="0.6"
+        android:layout_marginTop="12dp">
+
+        <TextView
+            android:id="@+id/txt_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Status log:"
+            android:padding="8dp"
+            android:textSize="14sp" />
+    </ScrollView>
+
+    <!-- Liste des devices -->
+    <ListView
+        android:id="@+id/devices_list"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:paddingTop="12dp" />
+
+</LinearLayout>
