@@ -54,6 +54,21 @@ public class MainActivity extends AppCompatActivity {
             UUID.fromString("00002a49-0000-1000-8000-00805f9b34fb"); // 0x2A49
     private static final UUID CCCD_UUID =
             UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"); // 0x2902
+    // RACP + BP Record
+    private static final UUID RACP_UUID =
+            UUID.fromString("00002a52-0000-1000-8000-00805f9b34fb"); // Record Access Control Point
+
+    private static final UUID BP_RECORD_UUID =
+            UUID.fromString("00002b36-0000-1000-8000-00805f9b34fb"); // Blood Pressure Record (Enhanced BLS)
+
+    private BluetoothGattCharacteristic racpChar;
+    private BluetoothGattCharacteristic bpRecordChar;
+
+    // --- Record flow state ---
+    private enum RecordSetupStep { NONE, ENABLE_RACP_CCCD, ENABLE_BP_RECORD_CCCD, SEND_RACP_CMD, DONE }
+    private RecordSetupStep recordStep = RecordSetupStep.NONE;
+
+
 
     // UI
     private TextView txtFeature;
@@ -385,6 +400,11 @@ public class MainActivity extends AppCompatActivity {
             BluetoothGattService bps = gatt.getService(BPS_SERVICE_UUID);
             logStatus("Service BPS (0x1810): " + (bps != null ? "FOUND" : "NOT FOUND"));
             if (bps == null) return;
+            racpChar = bps.getCharacteristic(RACP_UUID);
+            bpRecordChar = bps.getCharacteristic(BP_RECORD_UUID);
+
+            logStatus("Char RACP (0x2A52): " + (racpChar != null ? "FOUND" : "NOT FOUND"));
+            logStatus("Char BP Record (0x2B36): " + (bpRecordChar != null ? "FOUND" : "NOT FOUND"));
 
             measurementChar = bps.getCharacteristic(BPS_MEASUREMENT_UUID);
             featureChar = bps.getCharacteristic(BPS_FEATURE_UUID);
@@ -408,8 +428,42 @@ public class MainActivity extends AppCompatActivity {
                 logStatus("Feature: not readable or missing");
                 // even if feature not readable, subscribe anyway
                 subscribeMeasurement(gatt);
+                // On démarre la config Record (RACP + BP Record) dès qu'on a le service
+                subscribeRecordStuff(gatt);
+
             }
         }
+        private void subscribeRecordStuff(BluetoothGatt gatt) {
+            if (ActivityCompat.checkSelfPermission(MainActivity.this, Manifest.permission.BLUETOOTH_CONNECT)
+                    != PackageManager.PERMISSION_GRANTED) return;
+
+            if (racpChar == null) {
+                logStatus("RACP: missing (0x2A52) -> record flow disabled");
+                return;
+            }
+            if (bpRecordChar == null) {
+                logStatus("BP Record: missing (0x2B36) -> record flow disabled");
+                return;
+            }
+
+            logStatus("Record flow: START");
+
+            // Step 1: enable indications on RACP (CCCD = 02 00)
+            recordStep = RecordSetupStep.ENABLE_RACP_CCCD;
+
+            boolean ok = gatt.setCharacteristicNotification(racpChar, true);
+            logStatus("RACP: setCharacteristicNotification(true) -> " + ok);
+
+            BluetoothGattDescriptor cccd = racpChar.getDescriptor(CCCD_UUID);
+            logStatus("RACP CCCD (0x2902): " + (cccd != null ? "FOUND" : "NOT FOUND"));
+            if (cccd == null) return;
+
+            cccd.setValue(BluetoothGattDescriptor.ENABLE_INDICATION_VALUE); // 02 00
+            boolean w = gatt.writeDescriptor(cccd);
+            logStatus("RACP: write CCCD (INDICATE) -> " + w);
+        }
+
+
 
         @Override
         public void onCharacteristicRead(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic, int status) {
@@ -431,6 +485,8 @@ public class MainActivity extends AppCompatActivity {
 
                 // ensuite tu t'abonnes à la measurement
                 subscribeMeasurement(gatt);
+                subscribeRecordStuff(gatt);
+
             }
         }
 
@@ -464,28 +520,162 @@ public class MainActivity extends AppCompatActivity {
 
         @Override
         public void onDescriptorWrite(BluetoothGatt gatt, BluetoothGattDescriptor descriptor, int status) {
-            logStatus("GATT: onDescriptorWrite uuid=" + descriptor.getUuid() + " status=" + status);
+            logStatus("GATT: onDescriptorWrite descUuid=" + descriptor.getUuid()
+                    + " charUuid=" + descriptor.getCharacteristic().getUuid()
+                    + " status=" + status);
 
-            if (CCCD_UUID.equals(descriptor.getUuid())) {
-                byte[] v = descriptor.getValue();
-                logStatus("CCCD value written: " + bytesToHex(v) + " (expect 02 00 for INDICATE)");
-            }
-        }
-
-        @Override
-        public void onCharacteristicChanged(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic) {
-            logStatus("GATT: onCharacteristicChanged uuid=" + characteristic.getUuid());
-
-            if (!BPS_MEASUREMENT_UUID.equals(characteristic.getUuid())) {
-                logStatus("Changed ignored: not Measurement");
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                logStatus("Descriptor write FAILED");
                 return;
             }
 
+            // We only care about CCCD writes
+            if (!CCCD_UUID.equals(descriptor.getUuid())) {
+                return;
+            }
+
+            UUID charUuid = descriptor.getCharacteristic().getUuid();
+            byte[] v = descriptor.getValue();
+            logStatus("CCCD value written: " + bytesToHex(v));
+
+            // =========================================================
+            // (A) If Measurement CCCD is done, start Record flow
+            // =========================================================
+            if (BPS_MEASUREMENT_UUID.equals(charUuid)) {
+                // Only start once
+                if (recordStep == RecordSetupStep.NONE) {
+                    logStatus("Measurement CCCD done -> start Record flow");
+                    subscribeRecordStuff(gatt); // will set recordStep = ENABLE_RACP_CCCD and write RACP CCCD
+                } else {
+                    logStatus("Measurement CCCD done -> recordStep already " + recordStep);
+                }
+                return;
+            }
+
+            // =========================================================
+            // (B) Record flow chaining
+            // =========================================================
+
+            // Step 1 done: RACP CCCD enabled -> enable BP Record CCCD
+            if (RACP_UUID.equals(charUuid) && recordStep == RecordSetupStep.ENABLE_RACP_CCCD) {
+                logStatus("Record flow: RACP CCCD enabled -> enable BP Record CCCD");
+                recordStep = RecordSetupStep.ENABLE_BP_RECORD_CCCD;
+
+                if (ActivityCompat.checkSelfPermission(MainActivity.this, Manifest.permission.BLUETOOTH_CONNECT)
+                        != PackageManager.PERMISSION_GRANTED) {
+                    logStatus("Missing BLUETOOTH_CONNECT (cannot enable BP Record)");
+                    return;
+                }
+
+                if (bpRecordChar == null) {
+                    logStatus("BP Record char is NULL");
+                    return;
+                }
+
+                boolean ok = gatt.setCharacteristicNotification(bpRecordChar, true);
+                logStatus("BP Record: setCharacteristicNotification(true) -> " + ok);
+
+                BluetoothGattDescriptor cccd = bpRecordChar.getDescriptor(CCCD_UUID);
+                logStatus("BP Record CCCD (0x2902): " + (cccd != null ? "FOUND" : "NOT FOUND"));
+                if (cccd == null) return;
+
+                cccd.setValue(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE); // 01 00
+                boolean w = gatt.writeDescriptor(cccd);
+                logStatus("BP Record: write CCCD (NOTIFY) -> " + w);
+                return;
+            }
+
+            // Step 2 done: BP Record CCCD enabled -> send RACP command 01 01
+            if (BP_RECORD_UUID.equals(charUuid) && recordStep == RecordSetupStep.ENABLE_BP_RECORD_CCCD) {
+                logStatus("Record flow: BP Record CCCD enabled -> send RACP cmd (01 01)");
+                recordStep = RecordSetupStep.SEND_RACP_CMD;
+
+                requestAllRecords(gatt);
+
+                recordStep = RecordSetupStep.DONE;
+                logStatus("Record flow: DONE");
+                return;
+            }
+
+            // If we reach here, it's a CCCD write we didn't expect in the current step
+            logStatus("CCCD write ignored (char=" + charUuid + ", recordStep=" + recordStep + ")");
+        }
+
+
+        private void requestAllRecords(BluetoothGatt gatt) {
+            if (ActivityCompat.checkSelfPermission(MainActivity.this, Manifest.permission.BLUETOOTH_CONNECT)
+                    != PackageManager.PERMISSION_GRANTED) return;
+
+            if (racpChar == null) {
+                logStatus("RACP: missing, cannot request records");
+                return;
+            }
+
+            // RACP: Report Stored Records (0x01), Operator: All records (0x01)
+            byte[] cmd = new byte[]{0x01, 0x01};
+            racpChar.setValue(cmd);
+
+            boolean ok = gatt.writeCharacteristic(racpChar);
+            logStatus("RACP: write cmd '01 01' -> " + ok);
+        }
+
+
+
+        @Override
+        public void onCharacteristicChanged(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic) {
+            UUID uuid = characteristic.getUuid();
             byte[] data = characteristic.getValue();
+
+            logStatus("GATT: onCharacteristicChanged uuid=" + uuid);
+
+            // =========================
+            // (1) RACP (0x2A52) - Indication response
+            // =========================
+            if (RACP_UUID.equals(uuid)) {
+                logStatus("RACP INDICATION len=" + (data == null ? -1 : data.length));
+                logStatus("RACP INDICATION raw: " + bytesToHex(data));
+                // Optionnel: tu peux décoder plus tard (opcode response / number of records / etc.)
+                return;
+            }
+
+            // =========================
+            // (2) Blood Pressure Record (0x2B36) - Notify
+            // =========================
+            if (BP_RECORD_UUID.equals(uuid)) {
+                logStatus("BP RECORD NOTIFY len=" + (data == null ? -1 : data.length));
+                logStatus("BP RECORD NOTIFY raw: " + bytesToHex(data));
+                logStatus("BP RECORD header: " + parseBpRecordHeader(data));
+
+                // Optionnel: si le record transporte un BP Measurement (UUID 0x2A35),
+                // tu peux tenter de parser le payload ici plus tard.
+                return;
+            }
+
+            // =========================
+            // (3) Blood Pressure Measurement (0x2A35) - Indicate/Notify
+            // =========================
+            if (!BPS_MEASUREMENT_UUID.equals(uuid)) {
+                logStatus("Changed ignored: not Measurement/RACP/Record");
+                return;
+            }
+
+            // RAW log
+            logStatus("Measurement len=" + (data == null ? -1 : data.length));
             logStatus("Measurement raw: " + bytesToHex(data));
 
+            // Parse measurement
             ParsedBpsMeasurement parsed = parseBpsMeasurement(data);
+            logStatus("Measurement parsed: " + (parsed == null ? "NULL" :
+                    String.format(Locale.US,
+                            "SYS=%.2f DIA=%.2f MAP=%.2f %s ts=%s pulse=%s user=%s status=%s",
+                            parsed.systolic, parsed.diastolic, parsed.map, parsed.unit,
+                            String.valueOf(parsed.timestamp),
+                            String.valueOf(parsed.pulseRate),
+                            String.valueOf(parsed.userId),
+                            String.valueOf(parsed.status)
+                    )));
 
+            // UI update
             runOnUiThread(() -> {
                 if (parsed == null) {
                     txtBp.setText("Tension : -- / --");
@@ -515,6 +705,7 @@ public class MainActivity extends AppCompatActivity {
                 }
             });
         }
+
     };
 
     // =========================
@@ -585,6 +776,25 @@ public class MainActivity extends AppCompatActivity {
         }
         return sb.toString();
     }
+    private static String parseBpRecordHeader(byte[] d) {
+        if (d == null) return "(null)";
+        if (d.length < 5) return "(too short: need >=5)";
+
+        int seg = d[0] & 0xFF;
+        boolean first = (seg & 0x80) != 0;
+        boolean last  = (seg & 0x40) != 0;
+        int counter   = (seg & 0x3F);
+
+        int seq = (d[1] & 0xFF) | ((d[2] & 0xFF) << 8);
+        int uuid16 = (d[3] & 0xFF) | ((d[4] & 0xFF) << 8);
+
+        int payloadLen = d.length - 5;
+
+        return String.format(Locale.US,
+                "seg[first=%s last=%s ctr=%d] seq=%d uuid=0x%04X payloadLen=%d",
+                first, last, counter, seq, uuid16, payloadLen);
+    }
+
 
     private static String bytesToHex(byte[] data) {
         if (data == null) return "(null)";
