@@ -429,11 +429,16 @@ public class MainActivity extends AppCompatActivity {
                 // even if feature not readable, subscribe anyway
                 subscribeMeasurement(gatt);
                 // On démarre la config Record (RACP + BP Record) dès qu'on a le service
-                subscribeRecordStuff(gatt);
+
 
             }
         }
         private void subscribeRecordStuff(BluetoothGatt gatt) {
+            if (recordStep != RecordSetupStep.NONE) {
+                logStatus("Record flow already started: " + recordStep);
+                return;
+            }
+
             if (ActivityCompat.checkSelfPermission(MainActivity.this, Manifest.permission.BLUETOOTH_CONNECT)
                     != PackageManager.PERMISSION_GRANTED) return;
 
@@ -485,7 +490,7 @@ public class MainActivity extends AppCompatActivity {
 
                 // ensuite tu t'abonnes à la measurement
                 subscribeMeasurement(gatt);
-                subscribeRecordStuff(gatt);
+
 
             }
         }
@@ -542,15 +547,15 @@ public class MainActivity extends AppCompatActivity {
             // (A) If Measurement CCCD is done, start Record flow
             // =========================================================
             if (BPS_MEASUREMENT_UUID.equals(charUuid)) {
-                // Only start once
                 if (recordStep == RecordSetupStep.NONE) {
-                    logStatus("Measurement CCCD done -> start Record flow");
-                    subscribeRecordStuff(gatt); // will set recordStep = ENABLE_RACP_CCCD and write RACP CCCD
+                    logStatus("Measurement CCCD done -> start Record flow (delayed)");
+                    handler.postDelayed(() -> subscribeRecordStuff(gatt), 200);
                 } else {
                     logStatus("Measurement CCCD done -> recordStep already " + recordStep);
                 }
                 return;
             }
+
 
             // =========================================================
             // (B) Record flow chaining
